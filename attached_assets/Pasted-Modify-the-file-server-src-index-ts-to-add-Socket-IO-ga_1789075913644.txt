@@ -1,0 +1,130 @@
+Modify the file server/src/index.ts to add Socket.IO game logic. Here is the exact content I want in that file:
+
+import express from "express";
+import { createServer } from "node:http";
+import { Server } from "socket.io";
+import { StareJoc, Carte, CategorieCarte, TipEfect } from './types.js';
+import { pornesteJoc, trageCarte, joacaCarte, terminaTura, verificaCastigator } from './joc.js';
+
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: "*" },
+});
+
+app.get("/health", (_request, response) => {
+  response.json({ status: "ok" });
+});
+
+let jocCurent: StareJoc | null = null;
+const jucatoriConectati: { id: string; nume: string }[] = [];
+
+io.on("connection", (socket) => {
+  console.log("Jucător conectat:", socket.id);
+  socket.emit("hello", "Serverul Unstable Unicorns te salută! 🦄");
+
+  socket.on("alatura", (nume: string) => {
+    if (jucatoriConectati.find(j => j.id === socket.id)) return;
+    if (jucatoriConectati.length >= 2) {
+      socket.emit("eroare", "Jocul e plin (maxim 2 jucători)");
+      return;
+    }
+    jucatoriConectati.push({ id: socket.id, nume });
+    console.log(nume + " s-a alăturat. Total: " + jucatoriConectati.length);
+    io.emit("lobby", jucatoriConectati.map(j => j.nume));
+    if (jucatoriConectati.length === 2) {
+      jocCurent = pornesteJoc(
+        jucatoriConectati.map(j => j.nume),
+        jucatoriConectati.map(j => j.id)
+      );
+      console.log("Joc pornit!");
+      trimiteStareTuturor();
+    }
+  });
+
+  socket.on("trage", () => {
+    if (!jocCurent) return;
+    const indexJucator = gasesteIndexJucator(socket.id);
+    if (indexJucator === -1) return;
+    if (indexJucator !== jocCurent.indexJucatorCurent) {
+      socket.emit("eroare", "Nu e rândul tău!");
+      return;
+    }
+    jocCurent = trageCarte(jocCurent, indexJucator);
+    trimiteStareTuturor();
+  });
+
+  socket.on("joaca", ({ idCarte, indexTinta }: { idCarte: string; indexTinta?: number }) => {
+    if (!jocCurent) return;
+    const indexJucator = gasesteIndexJucator(socket.id);
+    if (indexJucator === -1) return;
+    if (indexJucator !== jocCurent.indexJucatorCurent) {
+      socket.emit("eroare", "Nu e rândul tău!");
+      return;
+    }
+    try {
+      jocCurent = joacaCarte(jocCurent, indexJucator, idCarte, indexTinta);
+      const castigator = verificaCastigator(jocCurent);
+      if (castigator) {
+        io.emit("castigator", castigator.nume);
+      }
+      trimiteStareTuturor();
+    } catch (err) {
+      socket.emit("eroare", String(err));
+    }
+  });
+
+  socket.on("termina_tura", () => {
+    if (!jocCurent) return;
+    const indexJucator = gasesteIndexJucator(socket.id);
+    if (indexJucator !== jocCurent.indexJucatorCurent) {
+      socket.emit("eroare", "Nu e rândul tău!");
+      return;
+    }
+    jocCurent = terminaTura(jocCurent);
+    trimiteStareTuturor();
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Jucător deconectat:", socket.id);
+    const index = jucatoriConectati.findIndex(j => j.id === socket.id);
+    if (index !== -1) {
+      jucatoriConectati.splice(index, 1);
+      io.emit("lobby", jucatoriConectati.map(j => j.nume));
+    }
+  });
+});
+
+function gasesteIndexJucator(socketId: string): number {
+  if (!jocCurent) return -1;
+  return jocCurent.jucatori.findIndex(j => j.id === socketId);
+}
+
+function trimiteStareTuturor() {
+  if (!jocCurent) return;
+  for (const jucator of jocCurent.jucatori) {
+    const starePersonalizata = ascundeManaAltora(jocCurent, jucator.id);
+    io.to(jucator.id).emit("stare", starePersonalizata);
+  }
+}
+
+function ascundeManaAltora(stare: StareJoc, idJucatorCurent: string): StareJoc {
+  const copie = structuredClone(stare);
+  for (const jucator of copie.jucatori) {
+    if (jucator.id !== idJucatorCurent) {
+      jucator.mana = jucator.mana.map((_, i) => ({
+        id: "ascuns_" + i,
+        nume: "Carte ascunsă",
+        categorie: "unicorn_obisnuit" as CategorieCarte,
+        efect: { tip: "niciunul" as TipEfect },
+        descriere: "",
+        numarInPachet: 0,
+      }));
+    }
+  }
+  return copie;
+}
+
+httpServer.listen(3001, () => {
+  console.info("unstable-unicorns server listening on port 3001");
+});
